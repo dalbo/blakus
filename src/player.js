@@ -24,10 +24,18 @@ class Player {
     this._coyoteFrames = 0;
     // variable-height jump: tracks whether jump was held last frame
     this._jumpHeld = false;
+    this._ridingPlatform = null;
   }
 
   update(dt, input, platforms) {
     if (this.invincible) { this._flyUpdate(dt, input); return; }
+
+    // Carry the player by the exact pixel delta the platform moved this frame
+    if (this.onGround && this._ridingPlatform && this._ridingPlatform.vx !== undefined) {
+      this.x += this._ridingPlatform.vx;
+      this.y += this._ridingPlatform.vy;
+    }
+    this._ridingPlatform = null;
 
     // Horizontal (arrows or WASD)
     const left  = input.isDown('ArrowLeft')  || input.isDown('KeyA');
@@ -104,6 +112,7 @@ class Player {
       if (this.vy >= 0) {
         this.y = p.y - this.height;
         this.onGround = true;
+        this._ridingPlatform = p;
       } else {
         this.y = p.y + p.height;
       }
@@ -140,6 +149,7 @@ class Player {
     this.vy = 0;
     this.onGround = false;
     this._coyoteFrames = 0;
+    this._ridingPlatform = null;
   }
 
   _overlaps(p) {
@@ -176,7 +186,7 @@ class Player {
     ctx.save();
     ctx.imageSmoothingEnabled = false;
 
-    if (this.facingRight) {
+    if (!this.facingRight) {
       ctx.drawImage(PLAYER_IMG, dx, dy, vw, vh);
       if (this.invincible) {
         ctx.globalCompositeOperation = 'source-atop';

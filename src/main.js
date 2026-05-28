@@ -21,6 +21,7 @@ const CROWN_KEY = 'blakus_crown';
 let hasCrown = false;
 try { hasCrown = localStorage.getItem(CROWN_KEY) === 'true'; } catch (e) {}
 let justEarnedCrown = false; // set on the run that unlocks it
+let cheated = false;         // true if invincible or level-skip was used this run
 
 function formatTime(ms) {
   const totalSec = ms / 1000;
@@ -57,6 +58,7 @@ function startGame() {
   respawns        = 0;
   levelTimes      = [];
   justEarnedCrown = false;
+  cheated         = false;
   levelStartMs    = performance.now();
   loadLevel(0);
   gameState = 'playing';
@@ -139,6 +141,7 @@ function drawMenuScreen(timestamp) {
 function returnToMenu() {
   respawns   = 0;
   levelTimes = [];
+  cheated    = false;
   if (player) player.invincible = false;
   gameState  = 'menu';
 }
@@ -199,52 +202,62 @@ function drawWinScreen(timestamp) {
   ctx.font = '13px monospace';
   ctx.fillText(`deaths: ${respawns}`, canvas.width / 2, 95);
 
-  // Per-level breakdown
-  const leftX  = canvas.width / 2 - 80;
-  const rightX = canvas.width / 2 + 80;
-  let total = 0;
-  let y = 140;
-
-  ctx.font = '15px monospace';
-  for (let i = 0; i < levelTimes.length; i++) {
-    total += levelTimes[i];
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'left';
-    ctx.fillText(`Level ${i + 1}`, leftX, y);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#b0b0d0';
-    ctx.fillText(formatTime(levelTimes[i]), rightX, y);
-    y += 24;
-  }
-
-  // Divider
-  ctx.strokeStyle = '#3a3a5a';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(leftX, y - 6);
-  ctx.lineTo(rightX, y - 6);
-  ctx.stroke();
-  y += 14;
-
-  // Total
-  ctx.fillStyle = '#00d9a3';
-  ctx.font = 'bold 17px monospace';
-  ctx.textAlign = 'left';
-  ctx.fillText('Total', leftX, y);
-  ctx.textAlign = 'right';
-  ctx.fillText(formatTime(total), rightX, y);
-
-  // Crown notification (first-time flawless clear)
-  y += 40;
   ctx.textAlign = 'center';
-  if (justEarnedCrown) {
-    ctx.fillStyle = '#ffd700';
-    ctx.font = 'bold 16px monospace';
-    ctx.fillText('♛  CROWN EARNED  ♛', canvas.width / 2, y);
-  } else if (respawns === 0) {
-    ctx.fillStyle = '#ffd700';
+  if (cheated) {
+    ctx.fillStyle = '#ff4455';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('TIME NOT VALID', canvas.width / 2, 150);
+    ctx.fillStyle = '#7a4a4a';
     ctx.font = '13px monospace';
-    ctx.fillText('flawless run!', canvas.width / 2, y);
+    ctx.fillText('cheats were used this run', canvas.width / 2, 178);
+  } else {
+    // Per-level breakdown
+    const leftX  = canvas.width / 2 - 80;
+    const rightX = canvas.width / 2 + 80;
+    let total = 0;
+    let y = 140;
+
+    ctx.font = '15px monospace';
+    for (let i = 0; i < levelTimes.length; i++) {
+      total += levelTimes[i];
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.fillText(`Level ${i + 1}`, leftX, y);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#b0b0d0';
+      ctx.fillText(formatTime(levelTimes[i]), rightX, y);
+      y += 24;
+    }
+
+    // Divider
+    ctx.strokeStyle = '#3a3a5a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(leftX, y - 6);
+    ctx.lineTo(rightX, y - 6);
+    ctx.stroke();
+    y += 14;
+
+    // Total
+    ctx.fillStyle = '#00d9a3';
+    ctx.font = 'bold 17px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('Total', leftX, y);
+    ctx.textAlign = 'right';
+    ctx.fillText(formatTime(total), rightX, y);
+
+    // Crown notification (first-time flawless clear)
+    y += 40;
+    ctx.textAlign = 'center';
+    if (justEarnedCrown) {
+      ctx.fillStyle = '#ffd700';
+      ctx.font = 'bold 16px monospace';
+      ctx.fillText('♛  CROWN EARNED  ♛', canvas.width / 2, y);
+    } else if (respawns === 0) {
+      ctx.fillStyle = '#ffd700';
+      ctx.font = '13px monospace';
+      ctx.fillText('flawless run!', canvas.width / 2, y);
+    }
   }
 
   // Restart prompt
@@ -316,7 +329,21 @@ function gameLoop(timestamp) {
   // Secret: Enter toggles invincible/fly mode
   if (input.justPressed('Enter')) {
     player.invincible = !player.invincible;
+    if (player.invincible) cheated = true;
   }
+
+  // Secret: 1–5 jumps directly to that level
+  for (let n = 1; n <= 5; n++) {
+    if (input.justPressed(`Digit${n}`)) {
+      cheated      = true;
+      levelStartMs = performance.now();
+      loadLevel(n - 1);
+      break;
+    }
+  }
+
+  // Advance moving platforms before player physics so vx/vy are current
+  for (const p of level.platforms) { if (p.update) p.update(dt); }
 
   player.update(dt, input, level.platforms);
 
@@ -357,7 +384,7 @@ function gameLoop(timestamp) {
       loadLevel(currentLevel + 1);
     } else {
       // Flawless run — grant the crown (persist across sessions)
-      if (respawns === 0 && !hasCrown) {
+      if (respawns === 0 && !hasCrown && !cheated) {
         hasCrown = true;
         justEarnedCrown = true;
         try { localStorage.setItem(CROWN_KEY, 'true'); } catch (e) {}
