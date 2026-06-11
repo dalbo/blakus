@@ -6,7 +6,8 @@ class Input {
     window.addEventListener('keydown', e => {
       if (!this.keys[e.code]) this._justPressed[e.code] = true;
       this.keys[e.code] = true;
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space',
+      if (document.activeElement.tagName !== 'INPUT' &&
+          ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space',
            'KeyE', 'KeyR', 'KeyM', 'KeyP', 'Enter', 'KeyS', 'KeyQ',
            'ShiftLeft', 'ShiftRight', 'Tab'].includes(e.code)) {
         e.preventDefault();

@@ -20,6 +20,13 @@ let levelTimes   = [];
 
 const CROWN_KEY = 'blakus_crown';
 let hasCrown = false;
+
+const LB_1P = 'blakus_lb_1p';
+const LB_2P = 'blakus_lb_2p';
+
+let lbViewMode   = '1p'; // which board is currently displayed
+let lbEntries    = [];   // entries for the currently displayed board
+let newEntryRank = -1;   // 0-based rank of just-saved entry, -1 = none
 try { hasCrown = localStorage.getItem(CROWN_KEY) === 'true'; } catch (e) {}
 let justEarnedCrown = false;
 let cheated = false;
@@ -53,6 +60,10 @@ function formatTime(ms) {
 }
 
 let level, players, cameras;
+
+function loadLbEntries() {
+  lbEntries = Leaderboard.load(lbViewMode === '1p' ? LB_1P : LB_2P);
+}
 
 function snapCameras() {
   const vw = twoPlayerMode ? VPORT_W : canvas.width;
@@ -114,6 +125,7 @@ function startGame() {
   levelTimes      = [];
   justEarnedCrown = false;
   cheated         = false;
+  newEntryRank    = -1;
   levelStartMs    = performance.now();
   loadLevel(0);
   gameState = 'playing';
@@ -286,13 +298,15 @@ function drawMenuScreen(timestamp) {
                canvas.width / 2, canvas.height - 60);
   ctx.fillText('E at door to advance · 1P: Q to respawn · 2P: R to respawn',
                canvas.width / 2, canvas.height - 42);
-  ctx.fillText('P to pause · M for menu',
+  ctx.fillText('P to pause · M for menu · L for leaderboard',
                canvas.width / 2, canvas.height - 24);
 
   ctx.restore();
 }
 
 function returnToMenu() {
+  document.getElementById('name-entry').style.display = 'none';
+  newEntryRank = -1;
   deaths     = [0, 0];
   levelTimes = [];
   cheated    = false;
@@ -382,8 +396,83 @@ function drawWinScreen(timestamp) {
   ctx.textAlign = 'center';
   if (Math.floor(timestamp / 500) % 2 === 0) {
     ctx.fillStyle = '#ffffff';
+    ctx.font = '13px monospace';
+    ctx.fillText('SPACE — menu' + (cheated ? '' : '   ·   E — save score') + '   ·   L — leaderboard',
+                 canvas.width / 2, canvas.height - 20);
+  }
+
+  ctx.restore();
+}
+
+function drawLeaderboardScreen(timestamp) {
+  ctx.fillStyle = '#05050f';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  const is1p = lbViewMode === '1p';
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#00d9a3';
+  ctx.font = 'bold 22px monospace';
+  ctx.fillText(is1p ? '1P LEADERBOARD' : '2P LEADERBOARD', canvas.width / 2, 42);
+
+  ctx.fillStyle = '#3a3a5a';
+  ctx.font = '11px monospace';
+  ctx.fillText(`TAB — view ${is1p ? '2P' : '1P'} board`, canvas.width / 2, 62);
+
+  if (lbEntries.length === 0) {
+    ctx.fillStyle = '#3a3a5a';
     ctx.font = '14px monospace';
-    ctx.fillText('press SPACE to restart', canvas.width / 2, canvas.height - 40);
+    ctx.fillText('no scores yet', canvas.width / 2, canvas.height / 2);
+  } else {
+    const rankX = 50, nameX = 100, timeX = 640, deathsX = 750;
+    const startY = 90, rowH = 30;
+
+    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = '#3a3a5a';
+    ctx.textAlign = 'left';
+    ctx.fillText('#', rankX, startY);
+    ctx.fillText(is1p ? 'NAME' : 'P1 / P2', nameX, startY);
+    ctx.textAlign = 'right';
+    ctx.fillText('TIME', timeX, startY);
+    ctx.fillText('DEATHS', deathsX, startY);
+
+    ctx.strokeStyle = '#1a1a3a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(40, startY + 8);
+    ctx.lineTo(canvas.width - 40, startY + 8);
+    ctx.stroke();
+
+    lbEntries.forEach((e, i) => {
+      const y = startY + rowH + i * rowH;
+      const isNew = i === newEntryRank;
+
+      if (isNew) {
+        ctx.fillStyle = 'rgba(0,217,163,0.12)';
+        ctx.fillRect(40, y - 20, canvas.width - 80, rowH);
+      }
+
+      ctx.fillStyle = isNew ? '#00d9a3' : (i < 3 ? '#ffffff' : '#7a7a9a');
+      ctx.font = (isNew ? 'bold ' : '') + '14px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${i + 1}.`, rankX, y);
+
+      const nameStr = is1p ? e.name : `${e.nameP1} & ${e.nameP2}`;
+      ctx.fillText(nameStr.length > 32 ? nameStr.slice(0, 31) + '…' : nameStr, nameX, y);
+
+      ctx.textAlign = 'right';
+      ctx.fillText(formatTime(e.timeMs), timeX, y);
+      const d = is1p ? e.deaths : `${e.p1Deaths}+${e.p2Deaths}`;
+      ctx.fillText(d, deathsX, y);
+    });
+  }
+
+  ctx.textAlign = 'center';
+  if (Math.floor(timestamp / 500) % 2 === 0) {
+    ctx.fillStyle = '#5a5a7a';
+    ctx.font = '12px monospace';
+    ctx.fillText('SPACE — menu', canvas.width / 2, canvas.height - 18);
   }
 
   ctx.restore();
@@ -398,6 +487,12 @@ function gameLoop(timestamp) {
     drawMenuScreen(timestamp);
     if (input.justPressed('Space')) { twoPlayerMode = false; startGame(); }
     if (input.justPressed('Enter')) { twoPlayerMode = true;  startGame(); }
+    if (input.justPressed('KeyL')) {
+      newEntryRank = -1;
+      lbViewMode = twoPlayerMode ? '2p' : '1p';
+      loadLbEntries();
+      gameState = 'leaderboard';
+    }
     input.clearFrame();
     requestAnimationFrame(gameLoop);
     return;
@@ -406,6 +501,37 @@ function gameLoop(timestamp) {
   if (gameState === 'won') {
     drawWinScreen(timestamp);
     if (input.justPressed('Space')) returnToMenu();
+    if (!cheated && input.justPressed('KeyE')) {
+      gameState = 'name_entry';
+      showNameEntry();
+    }
+    if (input.justPressed('KeyL')) {
+      newEntryRank = -1;
+      lbViewMode = twoPlayerMode ? '2p' : '1p';
+      loadLbEntries();
+      gameState = 'leaderboard';
+    }
+    input.clearFrame();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+
+  if (gameState === 'leaderboard') {
+    drawLeaderboardScreen(timestamp);
+    if (input.justPressed('Space') || input.justPressed('KeyM')) returnToMenu();
+    if (input.justPressed('Tab')) {
+      lbViewMode = lbViewMode === '1p' ? '2p' : '1p';
+      newEntryRank = -1;
+      loadLbEntries();
+    }
+    input.clearFrame();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+
+  if (gameState === 'name_entry') {
+    // HTML form is shown on top; just keep rendering the win screen as background
+    drawWinScreen(timestamp);
     input.clearFrame();
     requestAnimationFrame(gameLoop);
     return;
@@ -522,5 +648,84 @@ function gameLoop(timestamp) {
 
   requestAnimationFrame(gameLoop);
 }
+
+// ── Name entry form wiring ────────────────────────────────────────────────
+
+const _nameEntryEl  = document.getElementById('name-entry');
+const _form1pEl     = document.getElementById('form-1p');
+const _form2pEl     = document.getElementById('form-2p');
+const _inputName    = document.getElementById('input-name');
+const _inputNameP1  = document.getElementById('input-name-p1');
+const _inputNameP2  = document.getElementById('input-name-p2');
+
+function showNameEntry() {
+  if (twoPlayerMode) {
+    _form1pEl.style.display = 'none';
+    _form2pEl.style.display = 'flex';
+    _inputNameP1.value = '';
+    _inputNameP2.value = '';
+    setTimeout(() => _inputNameP1.focus(), 50);
+  } else {
+    _form1pEl.style.display = 'flex';
+    _form2pEl.style.display = 'none';
+    _inputName.value = '';
+    setTimeout(() => _inputName.focus(), 50);
+  }
+  _nameEntryEl.style.display = 'flex';
+}
+
+function _saveAndShowLeaderboard() {
+  const totalMs = levelTimes.reduce((a, b) => a + b, 0);
+  const date    = new Date().toLocaleDateString();
+  let result;
+  if (twoPlayerMode) {
+    const entry = {
+      nameP1:   _inputNameP1.value.trim() || 'P1',
+      nameP2:   _inputNameP2.value.trim() || 'P2',
+      timeMs:   totalMs,
+      p1Deaths: deaths[0],
+      p2Deaths: deaths[1],
+      date,
+    };
+    result = Leaderboard.add(LB_2P, entry);
+    lbViewMode = '2p';
+  } else {
+    const entry = {
+      name:   _inputName.value.trim() || 'Anonymous',
+      timeMs: totalMs,
+      deaths: deaths[0],
+      date,
+    };
+    result = Leaderboard.add(LB_1P, entry);
+    lbViewMode = '1p';
+  }
+  lbEntries    = result.entries;
+  newEntryRank = result.rank;
+  _nameEntryEl.style.display = 'none';
+  gameState = 'leaderboard';
+}
+
+document.getElementById('btn-save').addEventListener('click', _saveAndShowLeaderboard);
+
+document.getElementById('btn-skip').addEventListener('click', () => {
+  newEntryRank = -1;
+  lbViewMode   = twoPlayerMode ? '2p' : '1p';
+  loadLbEntries();
+  _nameEntryEl.style.display = 'none';
+  gameState = 'leaderboard';
+});
+
+[_inputName, _inputNameP1].forEach(el => {
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.target === _inputNameP1) _inputNameP2.focus();
+      else _saveAndShowLeaderboard();
+    }
+  });
+});
+_inputNameP2.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); _saveAndShowLeaderboard(); }
+});
 
 requestAnimationFrame(gameLoop);
