@@ -5,23 +5,45 @@ canvas.width  = 800;
 canvas.height = 500;
 ctx.imageSmoothingEnabled = false; // pixel-art crispness
 
+const VPORT_W = canvas.width / 2; // 400 — each player's viewport in 2P mode
+
 const input = new Input();
 
-let currentLevel = 0;
-let respawns     = 0;
-let gameState    = 'menu'; // 'menu' | 'playing' | 'paused' | 'won'
-let pauseStartMs = 0;      // when the current pause began (for timer offset)
+let currentLevel  = 0;
+let deaths        = [0, 0]; // per-player; deaths[1] unused in 1P mode
+let gameState     = 'menu'; // 'menu' | 'playing' | 'paused' | 'won'
+let twoPlayerMode = false;
+let pauseStartMs  = 0;
 
-// Timer state — times are in ms, converted on display
 let levelStartMs = 0;
-let levelTimes   = []; // filled in as each level's door is entered
+let levelTimes   = [];
 
-// Crown: earned by beating level 5 with 0 respawns. Persists across sessions.
 const CROWN_KEY = 'blakus_crown';
 let hasCrown = false;
 try { hasCrown = localStorage.getItem(CROWN_KEY) === 'true'; } catch (e) {}
-let justEarnedCrown = false; // set on the run that unlocks it
-let cheated = false;         // true if invincible or level-skip was used this run
+let justEarnedCrown = false;
+let cheated = false;
+
+// 1P: full merged controls (arrows + WASD)
+const P1_CONTROLS_1P = {
+  left:  ['ArrowLeft', 'KeyA'],
+  right: ['ArrowRight', 'KeyD'],
+  up:    ['ArrowUp', 'KeyW', 'Space'],
+  down:  ['ArrowDown', 'KeyS'],
+};
+// 2P: arrows only for P1, WASD + shift for P2
+const P1_CONTROLS_2P = {
+  left:  ['KeyA'],
+  right: ['KeyD'],
+  up:    ['KeyW', 'ShiftLeft'],
+  down:  ['KeyS'],
+};
+const P2_CONTROLS = {
+  left:  ['ArrowLeft'],
+  right: ['ArrowRight'],
+  up:    ['ArrowUp', 'Space'],
+  down:  ['ArrowDown'],
+};
 
 function formatTime(ms) {
   const totalSec = ms / 1000;
@@ -30,32 +52,65 @@ function formatTime(ms) {
   return `${mins}:${secs}`;
 }
 
-let level, player, camera;
+let level, players, cameras;
 
-function snapCamera() {
-  camera.x = Math.max(0, Math.min(player.x + player.width  / 2 - canvas.width  / 2, level.width  - canvas.width));
-  camera.y = Math.max(0, Math.min(player.y + player.height / 2 - canvas.height / 2, level.height - canvas.height));
+function snapCameras() {
+  const vw = twoPlayerMode ? VPORT_W : canvas.width;
+  for (let i = 0; i < players.length; i++) {
+    cameras[i].x = Math.max(0, Math.min(
+      players[i].x + players[i].width  / 2 - vw / 2,
+      level.width - vw
+    ));
+    cameras[i].y = Math.max(0, Math.min(
+      players[i].y + players[i].height / 2 - canvas.height / 2,
+      level.height - canvas.height
+    ));
+  }
 }
 
-function doRespawn() {
-  respawns++;
-  player.respawn(level.spawnX, level.spawnY);
-  snapCamera();
+function doRespawn(i) {
+  deaths[i]++;
+  players[i].respawn(level.spawnX, level.spawnY);
+  const vw = twoPlayerMode ? VPORT_W : canvas.width;
+  cameras[i].x = Math.max(0, Math.min(
+    players[i].x + players[i].width  / 2 - vw / 2,
+    level.width - vw
+  ));
+  cameras[i].y = Math.max(0, Math.min(
+    players[i].y + players[i].height / 2 - canvas.height / 2,
+    level.height - canvas.height
+  ));
 }
 
 function loadLevel(n) {
-  const wasInvincible = player ? player.invincible : false;
+  const wasInvincible = players ? players[0].invincible : false;
   currentLevel = n;
-  level  = new Level(n);
-  player = new Player(level.spawnX, level.spawnY);
-  player.hasCrown = hasCrown;
-  player.invincible = wasInvincible;
-  camera = new Camera(canvas.width, canvas.height, level.width, level.height);
-  snapCamera();
+  level = new Level(n);
+
+  if (twoPlayerMode) {
+    players = [
+      new Player(level.spawnX,      level.spawnY, P1_CONTROLS_2P),
+      new Player(level.spawnX + 40, level.spawnY, P2_CONTROLS),
+    ];
+    cameras = [
+      new Camera(VPORT_W,       canvas.height, level.width, level.height),
+      new Camera(VPORT_W,       canvas.height, level.width, level.height),
+    ];
+    players[1].sprite   = PLAYER2_IMG;
+    players[1].hasCrown = hasCrown;
+  } else {
+    players  = [new Player(level.spawnX, level.spawnY, P1_CONTROLS_1P)];
+    cameras  = [new Camera(canvas.width, canvas.height, level.width, level.height)];
+  }
+
+  players[0].hasCrown   = hasCrown;
+  players[0].invincible = wasInvincible;
+
+  snapCameras();
 }
 
 function startGame() {
-  respawns        = 0;
+  deaths          = [0, 0];
   levelTimes      = [];
   justEarnedCrown = false;
   cheated         = false;
@@ -68,97 +123,109 @@ loadLevel(0); // initialize refs so state transitions are safe
 
 let lastTime = null;
 
-function drawBackground() {
+function drawBackground(cam) {
   ctx.fillStyle = 'rgba(255,255,255,0.05)';
   const tileW = 400, tileH = 300;
   const dots  = [[40,30],[120,80],[200,50],[310,110],[70,170],[260,200],[350,60],[150,240],[380,180],[90,250]];
-  const sx = Math.floor(camera.x / tileW);
-  const sy = Math.floor(camera.y / tileH);
-  for (let tx = sx - 1; tx <= sx + Math.ceil(canvas.width  / tileW) + 1; tx++) {
-    for (let ty = sy - 1; ty <= sy + Math.ceil(canvas.height / tileH) + 1; ty++) {
+  const sx = Math.floor(cam.x / tileW);
+  const sy = Math.floor(cam.y / tileH);
+  for (let tx = sx - 1; tx <= sx + Math.ceil(cam.width / tileW) + 1; tx++) {
+    for (let ty = sy - 1; ty <= sy + Math.ceil(cam.height / tileH) + 1; ty++) {
       for (const [dx, dy] of dots) ctx.fillRect(tx * tileW + dx, ty * tileH + dy, 2, 2);
     }
   }
 }
 
-function drawHUD() {
-  const t = formatTime(performance.now() - levelStartMs);
-  ctx.font = 'bold 14px monospace';
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.fillRect(10, 10, 370, 28);
-  ctx.fillStyle = '#00d9a3';
-  ctx.fillText(`LVL ${currentLevel + 1}/${Level.count}   TIME ${t}   DEATHS ${respawns}`, 18, 29);
-
-  if (player.invincible) {
-    ctx.fillStyle = 'rgba(255, 215, 0, 0.25)';
-    ctx.fillRect(canvas.width - 160, 10, 150, 28);
-    ctx.fillStyle = '#ffd700';
-    ctx.font = 'bold 13px monospace';
-    ctx.fillText('★ INVINCIBLE ★', canvas.width - 150, 29);
-  }
-}
-
-function drawMenuScreen(timestamp) {
-  ctx.fillStyle = '#0d0d1a';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+function drawViewport(i, offsetX) {
+  const cam = cameras[i];
+  const vw  = twoPlayerMode ? VPORT_W : canvas.width;
 
   ctx.save();
-  ctx.textAlign = 'center';
+  ctx.beginPath();
+  ctx.rect(offsetX, 0, vw, canvas.height);
+  ctx.clip();
 
-  ctx.fillStyle = '#5a5a7a';
-  ctx.font = '18px monospace';
-  ctx.fillText('welcome to', canvas.width / 2, canvas.height / 2 - 80);
+  ctx.fillStyle = level.bgColor;
+  ctx.fillRect(offsetX, 0, vw, canvas.height);
 
-  ctx.fillStyle = '#00d9a3';
-  ctx.font = 'bold 78px monospace';
-  ctx.fillText('BLAKUS', canvas.width / 2, canvas.height / 2 - 10);
+  // Shift right by offsetX, then scroll by camera position
+  ctx.translate(offsetX - Math.round(cam.x), -Math.round(cam.y));
 
-  if (hasCrown) {
-    ctx.fillStyle = '#ffd700';
-    ctx.font = '13px monospace';
-    ctx.fillText('♛  crowned  ♛', canvas.width / 2, canvas.height / 2 + 20);
-  }
+  drawBackground(cam);
+  for (const p of level.platforms) p.draw(ctx);
+  for (const s of level.spikes)    s.draw(ctx);
 
-  // Blinking prompt (toggles every 500ms)
-  if (Math.floor(timestamp / 500) % 2 === 0) {
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '16px monospace';
-    ctx.fillText('press SPACE to start', canvas.width / 2, canvas.height / 2 + 50);
-  }
+  // In co-op, only show the E prompt when BOTH players are at the door
+  const showPrompt = twoPlayerMode
+    ? players.every(p => level.door.isNear(p))
+    : level.door.isNear(players[0]);
+  level.door.draw(ctx, showPrompt);
 
-  ctx.fillStyle = '#3a3a5a';
-  ctx.font = '11px monospace';
-  ctx.fillText('arrows / WASD to move  ·  space / up / W to jump',
-               canvas.width / 2, canvas.height - 60);
-  ctx.fillText('E at door to advance  ·  R to respawn',
-               canvas.width / 2, canvas.height - 42);
-  ctx.fillText('P to pause  ·  M for menu',
-               canvas.width / 2, canvas.height - 24);
+  for (const p of players) p.draw(ctx);
 
   ctx.restore();
 }
 
-function returnToMenu() {
-  respawns   = 0;
-  levelTimes = [];
-  cheated    = false;
-  if (player) player.invincible = false;
-  gameState  = 'menu';
+function drawHUD() {
+  const t = formatTime(performance.now() - levelStartMs);
+  ctx.font = 'bold 13px monospace';
+
+  if (twoPlayerMode) {
+    // Left viewport — P1 info
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(5, 5, 240, 22);
+    ctx.fillStyle = '#00d9a3';
+    ctx.fillText(`LVL ${currentLevel + 1}/${Level.count}  ${t}  P1:${deaths[0]}`, 10, 21);
+
+    // Right viewport — P2 info
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(VPORT_W + 5, 5, 80, 22);
+    ctx.fillStyle = '#4499ff';
+    ctx.fillText(`P2:${deaths[1]}`, VPORT_W + 10, 21);
+
+    // Co-op door status — shown at bottom center when either player is waiting
+    const p1At = level.door.isNear(players[0]);
+    const p2At = level.door.isNear(players[1]);
+    if (p1At || p2At) {
+      const msg = (p1At && p2At)
+        ? 'both at door — press E!'
+        : p1At ? 'P1 at door · waiting for P2'
+               : 'P2 at door · waiting for P1';
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(canvas.width / 2 - 175, canvas.height - 26, 350, 20);
+      ctx.fillStyle = (p1At && p2At) ? '#00ff88' : '#ffdd44';
+      ctx.textAlign = 'center';
+      ctx.fillText(msg, canvas.width / 2, canvas.height - 11);
+      ctx.textAlign = 'left';
+    }
+
+  } else {
+    ctx.font = 'bold 14px monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(10, 10, 370, 28);
+    ctx.fillStyle = '#00d9a3';
+    ctx.fillText(`LVL ${currentLevel + 1}/${Level.count}   TIME ${t}   DEATHS ${deaths[0]}`, 18, 29);
+
+    if (players[0].invincible) {
+      ctx.fillStyle = 'rgba(255, 215, 0, 0.25)';
+      ctx.fillRect(canvas.width - 160, 10, 150, 28);
+      ctx.fillStyle = '#ffd700';
+      ctx.font = 'bold 13px monospace';
+      ctx.fillText('★ INVINCIBLE ★', canvas.width - 150, 29);
+    }
+  }
 }
 
 function drawGameScene() {
-  ctx.fillStyle = level.bgColor;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  ctx.save();
-  camera.apply(ctx);
-  drawBackground();
-  for (const p of level.platforms) p.draw(ctx);
-  for (const s of level.spikes)    s.draw(ctx);
-  level.door.draw(ctx, level.door.isNear(player));
-  player.draw(ctx);
-  ctx.restore();
-
+  if (twoPlayerMode) {
+    drawViewport(0, 0);
+    drawViewport(1, VPORT_W);
+    // Center divider line
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(VPORT_W - 1, 0, 2, canvas.height);
+  } else {
+    drawViewport(0, 0);
+  }
   drawHUD();
 }
 
@@ -186,6 +253,53 @@ function drawPauseOverlay(timestamp) {
   ctx.restore();
 }
 
+function drawMenuScreen(timestamp) {
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#5a5a7a';
+  ctx.font = '18px monospace';
+  ctx.fillText('welcome to', canvas.width / 2, canvas.height / 2 - 80);
+
+  ctx.fillStyle = '#00d9a3';
+  ctx.font = 'bold 78px monospace';
+  ctx.fillText('BLAKUS', canvas.width / 2, canvas.height / 2 - 10);
+
+  if (hasCrown) {
+    ctx.fillStyle = '#ffd700';
+    ctx.font = '13px monospace';
+    ctx.fillText('♛  crowned  ♛', canvas.width / 2, canvas.height / 2 + 20);
+  }
+
+  if (Math.floor(timestamp / 500) % 2 === 0) {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '15px monospace';
+    ctx.fillText('SPACE — 1 Player        ENTER — 2 Players', canvas.width / 2, canvas.height / 2 + 52);
+  }
+
+  ctx.fillStyle = '#3a3a5a';
+  ctx.font = '11px monospace';
+  ctx.fillText('1P: WASD to move · shift to jump    2P: arrows to move · space to jump',
+               canvas.width / 2, canvas.height - 60);
+  ctx.fillText('E at door to advance · 1P: Q to respawn · 2P: R to respawn',
+               canvas.width / 2, canvas.height - 42);
+  ctx.fillText('P to pause · M for menu',
+               canvas.width / 2, canvas.height - 24);
+
+  ctx.restore();
+}
+
+function returnToMenu() {
+  deaths     = [0, 0];
+  levelTimes = [];
+  cheated    = false;
+  if (players) players.forEach(p => p.invincible = false);
+  gameState  = 'menu';
+}
+
 function drawWinScreen(timestamp) {
   ctx.fillStyle = '#05050f';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -198,11 +312,16 @@ function drawWinScreen(timestamp) {
   ctx.font = 'bold 44px monospace';
   ctx.fillText('YOU WIN!', canvas.width / 2, 70);
 
+  const totalDeaths = deaths[0] + deaths[1];
   ctx.fillStyle = '#7a7a9a';
   ctx.font = '13px monospace';
-  ctx.fillText(`deaths: ${respawns}`, canvas.width / 2, 95);
+  if (twoPlayerMode) {
+    ctx.fillText(`P1 deaths: ${deaths[0]}  ·  P2 deaths: ${deaths[1]}  ·  total: ${totalDeaths}`,
+                 canvas.width / 2, 95);
+  } else {
+    ctx.fillText(`deaths: ${deaths[0]}`, canvas.width / 2, 95);
+  }
 
-  ctx.textAlign = 'center';
   if (cheated) {
     ctx.fillStyle = '#ff4455';
     ctx.font = 'bold 18px monospace';
@@ -211,7 +330,6 @@ function drawWinScreen(timestamp) {
     ctx.font = '13px monospace';
     ctx.fillText('cheats were used this run', canvas.width / 2, 178);
   } else {
-    // Per-level breakdown
     const leftX  = canvas.width / 2 - 80;
     const rightX = canvas.width / 2 + 80;
     let total = 0;
@@ -246,14 +364,14 @@ function drawWinScreen(timestamp) {
     ctx.textAlign = 'right';
     ctx.fillText(formatTime(total), rightX, y);
 
-    // Crown notification (first-time flawless clear)
+    // Crown / flawless notification
     y += 40;
     ctx.textAlign = 'center';
     if (justEarnedCrown) {
       ctx.fillStyle = '#ffd700';
       ctx.font = 'bold 16px monospace';
       ctx.fillText('♛  CROWN EARNED  ♛', canvas.width / 2, y);
-    } else if (respawns === 0) {
+    } else if (totalDeaths === 0) {
       ctx.fillStyle = '#ffd700';
       ctx.font = '13px monospace';
       ctx.fillText('flawless run!', canvas.width / 2, y);
@@ -278,7 +396,8 @@ function gameLoop(timestamp) {
 
   if (gameState === 'menu') {
     drawMenuScreen(timestamp);
-    if (input.justPressed('Space')) startGame();
+    if (input.justPressed('Space')) { twoPlayerMode = false; startGame(); }
+    if (input.justPressed('Enter')) { twoPlayerMode = true;  startGame(); }
     input.clearFrame();
     requestAnimationFrame(gameLoop);
     return;
@@ -293,15 +412,12 @@ function gameLoop(timestamp) {
   }
 
   if (gameState === 'paused') {
-    // Keep the frozen scene visible, overlay the pause modal.
     drawGameScene();
     drawPauseOverlay(timestamp);
 
     if (input.justPressed('KeyM')) {
       returnToMenu();
     } else if (input.justPressed('KeyP') || input.justPressed('Space')) {
-      // Shift level start time forward by however long we were paused
-      // so the timer doesn't count the pause.
       levelStartMs += performance.now() - pauseStartMs;
       gameState = 'playing';
     }
@@ -311,7 +427,6 @@ function gameLoop(timestamp) {
   }
 
   // ── Update ────────────────────────────────────────────────────────────
-  // Pause or menu hotkeys intercept before any physics runs this frame.
   if (input.justPressed('KeyP')) {
     pauseStartMs = performance.now();
     gameState = 'paused';
@@ -326,10 +441,15 @@ function gameLoop(timestamp) {
     return;
   }
 
-  // Secret: Enter toggles invincible/fly mode
+  // Secret cheats: Tab = P1 (WASD), Enter = P2 (arrows) in 2P / P1 in 1P
+  if (input.justPressed('Tab')) {
+    players[0].invincible = !players[0].invincible;
+    if (players[0].invincible) cheated = true;
+  }
   if (input.justPressed('Enter')) {
-    player.invincible = !player.invincible;
-    if (player.invincible) cheated = true;
+    const target = twoPlayerMode ? players[1] : players[0];
+    target.invincible = !target.invincible;
+    if (target.invincible) cheated = true;
   }
 
   // Secret: 1–5 jumps directly to that level
@@ -345,46 +465,45 @@ function gameLoop(timestamp) {
   // Advance moving platforms before player physics so vx/vy are current
   for (const p of level.platforms) { if (p.update) p.update(dt); }
 
-  player.update(dt, input, level.platforms);
+  for (const p of players) p.update(dt, input, level.platforms);
 
-  // Boundary walls still apply in fly mode (player.update skips collision
-  // when invincible, so clamp the horizontal position here).
-  if (player.invincible) {
-    if (player.x < 0) player.x = 0;
-    if (player.x + player.width > level.width) {
-      player.x = level.width - player.width;
+  // Boundary clamp for invincible players (physics skips collision in fly mode)
+  for (const p of players) {
+    if (p.invincible) {
+      if (p.x < 0) p.x = 0;
+      if (p.x + p.width > level.width) p.x = level.width - p.width;
     }
   }
 
-  // Manual respawn: R key counts as a death
+  // Manual respawns: P1 (WASD) = Q, P2/1P (arrows) = R
   if (input.justPressed('KeyR')) {
-    doRespawn();
+    if (twoPlayerMode) doRespawn(1); else doRespawn(0);
   }
+  if (twoPlayerMode && input.justPressed('KeyQ')) doRespawn(0);
 
-  // Fall off world
-  if (player.y > level.height && !player.invincible) {
-    doRespawn();
-  }
-
-  // Spike collision (harmless when invincible)
-  if (!player.invincible) {
-    for (const spike of level.spikes) {
-      if (spike.collides(player)) {
-        doRespawn();
-        break;
+  // Fall-off and spike collisions — handled independently per player
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+    if (p.y > level.height && !p.invincible) {
+      doRespawn(i);
+    } else if (!p.invincible) {
+      for (const spike of level.spikes) {
+        if (spike.collides(p)) { doRespawn(i); break; }
       }
     }
   }
 
-  // Door interaction
-  if (level.door.isNear(player) && input.justPressed('KeyE')) {
+  // Co-op door: both players must be near to advance
+  const p1AtDoor = level.door.isNear(players[0]);
+  const p2AtDoor = !twoPlayerMode || level.door.isNear(players[1]);
+  if (p1AtDoor && p2AtDoor && input.justPressed('KeyE')) {
     levelTimes.push(performance.now() - levelStartMs);
     levelStartMs = performance.now();
     if (currentLevel + 1 < Level.count) {
       loadLevel(currentLevel + 1);
     } else {
-      // Flawless run — grant the crown (persist across sessions)
-      if (respawns === 0 && !hasCrown && !cheated) {
+      const totalDeaths = deaths[0] + deaths[1];
+      if (totalDeaths === 0 && !hasCrown && !cheated) {
         hasCrown = true;
         justEarnedCrown = true;
         try { localStorage.setItem(CROWN_KEY, 'true'); } catch (e) {}
@@ -393,7 +512,10 @@ function gameLoop(timestamp) {
     }
   }
 
-  camera.update(player, dt);
+  for (let i = 0; i < cameras.length; i++) {
+    cameras[i].update(players[i], dt);
+  }
+
   input.clearFrame();
 
   drawGameScene();

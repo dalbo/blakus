@@ -3,28 +3,35 @@ const JUMP_SPEED     = -720;  // px/s (gives ~172px max rise)
 const MOVE_SPEED     = 260;   // px/s
 const TERMINAL_VEL   = 900;   // px/s downward cap
 
-// Sprite — 441x441 pixel-art character. Loaded once; draw() falls back to
-// rectangles until it's ready (typically one frame).
 const PLAYER_IMG = new Image();
 PLAYER_IMG.src = 'assets/player_sprite.png';
 
+const PLAYER2_IMG = new Image();
+PLAYER2_IMG.src = 'assets/player2_sprite.png';
+
 class Player {
-  constructor(x, y) {
+  constructor(x, y, controls, tintColor = null) {
     this.x = x;
     this.y = y;
     this.width  = 28;
     this.height = 36;
     this.vx = 0;
     this.vy = 0;
-    this.onGround   = false;
+    this.onGround    = false;
     this.facingRight = true;
-    this.hasCrown   = true; // flawless-run cosmetic
-    this.invincible = false; // secret fly/god mode (Enter)
-    // coyote time: allow jump for a few frames after walking off a ledge
-    this._coyoteFrames = 0;
-    // variable-height jump: tracks whether jump was held last frame
-    this._jumpHeld = false;
-    this._ridingPlatform = null;
+    this.hasCrown    = true;
+    this.invincible  = false;
+    this.tintColor   = tintColor;
+    this.sprite      = null; // override with PLAYER2_IMG for P2
+    this._coyoteFrames    = 0;
+    this._jumpHeld        = false;
+    this._ridingPlatform  = null;
+    this.controls = controls || {
+      left:  ['ArrowLeft', 'KeyA'],
+      right: ['ArrowRight', 'KeyD'],
+      up:    ['ArrowUp', 'KeyW', 'Space'],
+      down:  ['ArrowDown', 'KeyS'],
+    };
   }
 
   update(dt, input, platforms) {
@@ -37,9 +44,8 @@ class Player {
     }
     this._ridingPlatform = null;
 
-    // Horizontal (arrows or WASD)
-    const left  = input.isDown('ArrowLeft')  || input.isDown('KeyA');
-    const right = input.isDown('ArrowRight') || input.isDown('KeyD');
+    const left  = this.controls.left.some(k  => input.isDown(k));
+    const right = this.controls.right.some(k => input.isDown(k));
     if (left) {
       this.vx = -MOVE_SPEED;
       this.facingRight = false;
@@ -51,22 +57,16 @@ class Player {
     }
 
     // Jump (coyote window: 6 frames ≈ 100ms)
-    const canJump = this.onGround || this._coyoteFrames > 0;
-    const jumpDown = input.isDown('ArrowUp') ||
-                     input.isDown('KeyW')    ||
-                     input.isDown('Space');
-    const jumpPressed = input.justPressed('ArrowUp') ||
-                        input.justPressed('KeyW')    ||
-                        input.justPressed('Space');
+    const canJump    = this.onGround || this._coyoteFrames > 0;
+    const jumpDown   = this.controls.up.some(k => input.isDown(k));
+    const jumpPressed = this.controls.up.some(k => input.justPressed(k));
     if (jumpPressed && canJump) {
       this.vy = JUMP_SPEED;
       this.onGround = false;
       this._coyoteFrames = 0;
     }
 
-    // Variable-height jump: if the player releases the jump button while
-    // still moving up, cut the upward velocity. Short tap = tiny hop,
-    // long hold = full height.
+    // Variable-height jump: tap = small hop, hold = full height
     if (this._jumpHeld && !jumpDown && this.vy < 0) {
       this.vy *= 0.4;
     }
@@ -122,10 +122,10 @@ class Player {
 
   _flyUpdate(dt, input) {
     const FLY_SPEED = 380;
-    const up    = input.isDown('ArrowUp')    || input.isDown('KeyW') || input.isDown('Space');
-    const down  = input.isDown('ArrowDown')  || input.isDown('KeyS');
-    const left  = input.isDown('ArrowLeft')  || input.isDown('KeyA');
-    const right = input.isDown('ArrowRight') || input.isDown('KeyD');
+    const up    = this.controls.up.some(k   => input.isDown(k));
+    const down  = this.controls.down.some(k => input.isDown(k));
+    const left  = this.controls.left.some(k => input.isDown(k));
+    const right = this.controls.right.some(k => input.isDown(k));
 
     this.vx = 0; this.vy = 0;
     if (right) this.vx += FLY_SPEED;
@@ -136,7 +136,6 @@ class Player {
     if (this.vx > 0) this.facingRight = true;
     else if (this.vx < 0) this.facingRight = false;
 
-    // Ghost movement — fly through platforms and spikes
     this.x += this.vx * dt;
     this.y += this.vy * dt;
     this.onGround = false;
@@ -167,8 +166,9 @@ class Player {
       ctx.fillRect(this.x - 5, this.y - 5, this.width + 10, this.height + 10);
     }
 
-    if (PLAYER_IMG.complete && PLAYER_IMG.naturalWidth > 0) {
-      this._drawSprite(ctx);
+    const img = this.sprite || PLAYER_IMG;
+    if (img.complete && img.naturalWidth > 0) {
+      this._drawSprite(ctx, img);
     } else {
       this._drawFallback(ctx);
     }
@@ -176,30 +176,30 @@ class Player {
     if (this.hasCrown) this._drawCrown(ctx);
   }
 
-  _drawSprite(ctx) {
-    // Sprite is slightly larger than hitbox so the visual has presence
-    // without inflating the collision box.
+  _drawSprite(ctx, img) {
     const vw = 40, vh = 44;
     const dx = this.x + (this.width  - vw) / 2;  // -6
     const dy = this.y + (this.height - vh) / 2;  // -4
+
+    const overlay = this.invincible ? 'rgba(255, 220, 70, 0.55)' : null;
 
     ctx.save();
     ctx.imageSmoothingEnabled = false;
 
     if (!this.facingRight) {
-      ctx.drawImage(PLAYER_IMG, dx, dy, vw, vh);
-      if (this.invincible) {
+      ctx.drawImage(img, dx, dy, vw, vh);
+      if (overlay) {
         ctx.globalCompositeOperation = 'source-atop';
-        ctx.fillStyle = 'rgba(255, 220, 70, 0.55)';
+        ctx.fillStyle = overlay;
         ctx.fillRect(dx, dy, vw, vh);
       }
     } else {
       ctx.translate(dx + vw, dy);
       ctx.scale(-1, 1);
-      ctx.drawImage(PLAYER_IMG, 0, 0, vw, vh);
-      if (this.invincible) {
+      ctx.drawImage(img, 0, 0, vw, vh);
+      if (overlay) {
         ctx.globalCompositeOperation = 'source-atop';
-        ctx.fillStyle = 'rgba(255, 220, 70, 0.55)';
+        ctx.fillStyle = overlay;
         ctx.fillRect(0, 0, vw, vh);
       }
     }
@@ -208,8 +208,7 @@ class Player {
   }
 
   _drawFallback(ctx) {
-    // Used while the sprite image is still loading (first frame or two).
-    ctx.fillStyle = this.invincible ? '#ffd700' : '#c22030';
+    ctx.fillStyle = this.invincible ? '#ffd700' : (this.tintColor ? '#1a55cc' : '#c22030');
     ctx.fillRect(this.x, this.y + 8, this.width, this.height - 8);
     ctx.fillStyle = this.invincible ? '#ffe255' : '#e8d890';
     ctx.fillRect(this.x + 3, this.y, this.width - 6, 10);
